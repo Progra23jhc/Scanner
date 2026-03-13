@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Escaner de Escritura a Excel</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Arial, sans-serif; background: #f5f5f5; color: #222; padding: 1rem; }
+h1 { font-size: 18px; font-weight: 500; color: #7030A0; margin-bottom: 1.5rem; border-bottom: 2px solid #7030A0; padding-bottom: 8px; }
+.step { margin-bottom: 1.5rem; }
+.step-label { font-size: 13px; font-weight: 500; color: #555; margin-bottom: 8px; }
+#drop-area { border: 2px dashed #aaa; border-radius: 12px; padding: 2rem; text-align: center; cursor: pointer; background: #fff; }
+#drop-area:active { background: #f0e8fa; }
+.icon { font-size: 40px; margin-bottom: 8px; }
+#drop-area p { color: #666; font-size: 14px; margin-top: 6px; }
+#preview { max-width: 100%; max-height: 260px; border-radius: 8px; margin-top: 1rem; display: none; }
+#ocr-text { width: 100%; min-height: 120px; font-family: monospace; font-size: 13px; border: 1px solid #ccc; border-radius: 8px; padding: 10px; background: #fafafa; resize: vertical; }
+.badge { display: inline-block; font-size: 11px; font-weight: 500; padding: 3px 10px; border-radius: 8px; margin-left: 8px; }
+.badge-ok { background: #d4edda; color: #155724; }
+.badge-warn { background: #fff3cd; color: #856404; }
+.badge-info { background: #d1ecf1; color: #0c5460; }
+#progress-bar { height: 4px; background: #eee; border-radius: 2px; overflow: hidden; margin-top: 8px; display: none; }
+#progress-fill { height: 100%; width: 0%; background: #7030A0; transition: width 0.3s; }
+select { margin-top: 4px; font-size: 13px; padding: 6px 10px; border-radius: 8px; border: 1px solid #ccc; background: #fff; width: 100%; }
+.btn { font-size: 14px; padding: 10px 20px; border-radius: 8px; border: 1px solid #aaa; background: #fff; cursor: pointer; margin-right: 8px; margin-top: 8px; }
+.btn-primary { background: #7030A0; color: white; border: none; }
+.hint { font-size: 12px; color: #888; margin-top: 6px; }
+table.preview-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+table.preview-table th { background: #f0e8fa; font-weight: 500; padding: 6px 10px; text-align: left; border-bottom: 1px solid #ccc; color: #4a1a6e; }
+table.preview-table td { padding: 5px 10px; border-bottom: 1px solid #eee; }
+#preview-section { display: none; overflow-x: auto; }
+.config-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.config-item { flex: 1; min-width: 140px; }
+</style>
+</head>
+<body>
+<h1>&#128247; Escaner de Escritura a Excel</h1>
+
+<div class="step">
+  <div class="step-label">1 — selecciona o toma una foto</div>
+  <div id="drop-area" onclick="document.getElementById('file-input').click()">
+    <div class="icon">&#128247;</div>
+    <p><strong>Toca aqui</strong> para elegir imagen o tomar foto</p>
+    <p style="font-size:12px; color:#aaa;">JPG, PNG — desde galeria o camara</p>
+  </div>
+  <input type="file" id="file-input" accept="image/*" capture="environment" style="display:none">
+  <img id="preview">
+</div>
+
+<div class="step">
+  <div class="step-label">2 — texto reconocido <span id="status-badge" class="badge badge-info" style="display:none"></span></div>
+  <div id="progress-bar"><div id="progress-fill"></div></div>
+  <textarea id="ocr-text" placeholder="El texto reconocido aparecera aqui. Puedes editarlo antes de exportar..."></textarea>
+  <p class="hint">Edita el texto si hay errores antes de exportar.</p>
+</div>
+
+<div class="step">
+  <div class="step-label">3 — configurar exportacion</div>
+  <div class="config-row">
+    <div class="config-item">
+      <label style="font-size:12px; color:#555;">Separador de columnas</label>
+      <select id="sep-select">
+        <option value="tab">Tabulacion</option>
+        <option value="comma">Coma (,)</option>
+        <option value="semicolon">Punto y coma (;)</option>
+        <option value="none">Sin separador</option>
+      </select>
+    </div>
+    <div class="config-item">
+      <label style="font-size:12px; color:#555;">Primera fila es cabecera</label>
+      <select id="header-select">
+        <option value="yes">Si</option>
+        <option value="no">No</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<div id="preview-section" class="step">
+  <div class="step-label">vista previa</div>
+  <div id="table-preview"></div>
+</div>
+
+<div>
+  <button class="btn" onclick="buildPreview()">Vista previa</button>
+  <button class="btn btn-primary" onclick="downloadExcel()">Descargar Excel</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+const fileInput = document.getElementById('file-input');
+const preview = document.getElementById('preview');
+const ocrText = document.getElementById('ocr-text');
+const statusBadge = document.getElementById('status-badge');
+const progressBar = document.getElementById('progress-bar');
+const progressFill = document.getElementById('progress-fill');
+
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  preview.src = url;
+  preview.style.display = 'block';
+  runOCR(url);
+});
+
+async function runOCR(url) {
+  ocrText.value = '';
+  statusBadge.style.display = 'inline-block';
+  statusBadge.className = 'badge badge-info';
+  statusBadge.textContent = 'reconociendo...';
+  progressBar.style.display = 'block';
+  progressFill.style.width = '0%';
+  try {
+    const worker = await Tesseract.createWorker('spa', 1, {
+      logger: m => { if (m.status === 'recognizing text') progressFill.style.width = Math.round(m.progress * 100) + '%'; }
+    });
+    const result = await worker.recognize(url);
+    await worker.terminate();
+    ocrText.value = result.data.text.trim();
+    statusBadge.className = 'badge badge-ok';
+    statusBadge.textContent = 'listo';
+    progressFill.style.width = '100%';
+  } catch(err) {
+    statusBadge.className = 'badge badge-warn';
+    statusBadge.textContent = 'error OCR';
+    ocrText.value = 'No se pudo reconocer. Intenta con imagen mas clara.';
+  }
+}
+
+function parseText() {
+  const sep = document.getElementById('sep-select').value;
+  const lines = ocrText.value.split('\n').filter(l => l.trim() !== '');
+  return lines.map(line => {
+    if (sep === 'tab')       return line.split('\t').map(c => c.trim());
+    if (sep === 'comma')     return line.split(',').map(c => c.trim());
+    if (sep === 'semicolon') return line.split(';').map(c => c.trim());
+    return [line.trim()];
+  });
+}
+
+function buildPreview() {
+  const rows = parseText();
+  const hasHeader = document.getElementById('header-select').value === 'yes';
+  const container = document.getElementById('table-preview');
+  const section = document.getElementById('preview-section');
+  if (rows.length === 0) return;
+  let html = '<table class="preview-table">';
+  rows.forEach((row, i) => {
+    if (i === 0 && hasHeader) html += '<tr>' + row.map(c => `<th>${c}</th>`).join('') + '</tr>';
+    else html += '<tr>' + row.map(c => `<td>${c}</td>`).join('') + '</tr>';
+  });
+  html += '</table>';
+  container.innerHTML = html;
+  section.style.display = 'block';
+}
+
+function downloadExcel() {
+  const rows = parseText();
+  if (rows.length === 0) { alert('No hay texto para exportar.'); return; }
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  XLSX.utils.book_append_sheet(wb, ws, 'Hoja1');
+  XLSX.writeFile(wb, 'escaneado_' + new Date().toISOString().slice(0,10) + '.xlsx');
+}
+</script>
+</body>
+</html>
